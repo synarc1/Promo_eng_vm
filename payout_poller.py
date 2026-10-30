@@ -69,6 +69,7 @@ def main():
     ap.add_argument("--show", type=int, default=10, help="how many pending payouts to list")
     ap.add_argument("--heartbeat", type=int, default=12, help="print a status line every N quiet polls")
     ap.add_argument("--stale-minutes", type=float, default=5.0, help="warn when the oldest pending payout is older")
+    ap.add_argument("--verbose", action="store_true", help="print every poll with its query time and the gap since the last poll")
     ap.add_argument("--once", action="store_true")
     a = ap.parse_args()
 
@@ -79,7 +80,7 @@ def main():
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
 
-    conn, failures, polls, last_ids, last_warn = None, 0, 0, None, 0.0
+    conn, failures, polls, last_ids, last_warn, last_start = None, 0, 0, None, 0.0, None
     log(f"payout poller started (read-only, every {a.interval:g}s)")
 
     while not stop:
@@ -88,6 +89,7 @@ def main():
                 conn = connect(dsn)
                 if failures:
                     log("reconnected")
+            started = time.monotonic()
             count, oldest = conn.execute(
                 """select count(*), coalesce(extract(epoch from now() - min(created_at)), 0)
                      from public.payout where status = 'pending'""").fetchone()
@@ -98,6 +100,10 @@ def main():
             conn.rollback()                  # end the read-only transaction between polls
             failures = 0
             polls += 1
+            if a.verbose:
+                gap = f"{started - last_start:.1f}s since the last poll" if last_start else "first poll"
+                log(f"poll {polls}: {count} pending, query took {(time.monotonic() - started) * 1000:.0f} ms, {gap}")
+            last_start = started
 
             ids = tuple(r[0] for r in rows)
             stale = bool(count) and oldest > a.stale_minutes * 60
